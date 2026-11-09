@@ -1,0 +1,13 @@
+services:
+  jotbar:
+    build:
+      context: ../..
+      dockerfile: crates/server/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      # Generate one with:  openssl rand -hex 32
+      JOTBAR_TOKEN: ${JOTBAR_TOKEN:?set JOTBAR_TOKEN}
+    volumes:
+      - ./data:/data
