@@ -20,6 +20,9 @@ async fn two_devices_via_shared_folder() {
 
     sync(&b, &mut rb).await.unwrap();
     assert_eq!(b.lock().unwrap().read(&id).unwrap(), "todo\n- ship it");
+    // The original creation time travels with the note.
+    let created_a = a.lock().unwrap().get_meta(&id).unwrap().created_at;
+    assert_eq!(b.lock().unwrap().get_meta(&id).unwrap().created_at, created_a);
 
     a.lock().unwrap().write(&id, "from A").unwrap();
     b.lock().unwrap().write(&id, "from B").unwrap();

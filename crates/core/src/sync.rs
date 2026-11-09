@@ -86,6 +86,7 @@ pub async fn sync(store: &Mutex<Store>, client: &mut Remote) -> Result<SyncRepor
                 let hash = content_hash(&content, l.deleted);
                 let body = PutNote {
                     content,
+                    created_at: l.created_at,
                     updated_at: l.updated_at,
                     deleted: l.deleted,
                     base_hash: rh.cloned(),
@@ -104,7 +105,7 @@ pub async fn sync(store: &Mutex<Store>, client: &mut Remote) -> Result<SyncRepor
                 if s.get_meta(id).map(|m| &m.hash) != lh {
                     continue;
                 }
-                s.apply_remote(id, &note.content, note.deleted, note.updated_at)?;
+                s.apply_remote(&note)?;
                 s.set_synced(id, &note.hash)?;
                 rep.pulled += 1;
                 rep.changed_local = true;
@@ -116,9 +117,9 @@ pub async fn sync(store: &Mutex<Store>, client: &mut Remote) -> Result<SyncRepor
                     continue;
                 }
                 let mine = s.read(id)?;
-                s.apply_remote(id, &note.content, note.deleted, note.updated_at)?;
+                s.apply_remote(&note)?;
                 s.set_synced(id, &note.hash)?;
-                s.create_after(&format!("⚠ Conflicted copy\n\n{mine}"), Some(id))?;
+                s.create(&format!("⚠ Conflicted copy\n\n{mine}"))?;
                 rep.conflicts += 1;
                 rep.changed_local = true;
             }

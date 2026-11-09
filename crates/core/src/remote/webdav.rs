@@ -125,7 +125,7 @@ impl WebdavBackend {
             let r = self
                 .req(Method::PUT, &name)
                 .header(header::CONTENT_TYPE, "text/markdown; charset=utf-8")
-                .body(encode_note(&body.content, body.updated_at, body.deleted))
+                .body(encode_note(&body.content, body.created_at, body.updated_at, body.deleted))
                 .send()
                 .await?;
             if !r.status().is_success() {

@@ -65,10 +65,10 @@ impl Default for MagicConfig {
 
 pub fn size_px(size: &str) -> (f64, f64) {
     match size {
-        "small" => (340.0, 400.0),
-        "large" => (560.0, 660.0),
-        "xlarge" => (760.0, 840.0),
-        _ => (440.0, 540.0),
+        "small" => (360.0, 480.0),
+        "large" => (540.0, 720.0),
+        "xlarge" => (700.0, 880.0),
+        _ => (440.0, 600.0),
     }
 }
 

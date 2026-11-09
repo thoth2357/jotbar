@@ -16,6 +16,8 @@ pub struct RemoteMeta {
 pub struct RemoteNote {
     pub id: String,
     pub content: String,
+    #[serde(default)]
+    pub created_at: i64,
     pub updated_at: i64,
     pub hash: String,
     pub deleted: bool,
@@ -29,6 +31,8 @@ pub struct RemoteNote {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PutNote {
     pub content: String,
+    #[serde(default)]
+    pub created_at: i64,
     pub updated_at: i64,
     pub deleted: bool,
     pub base_hash: Option<String>,

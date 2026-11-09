@@ -7,9 +7,10 @@ you want them on other devices **you pick where they sync to**: a folder you
 already sync, your own server, or any WebDAV share. No account, no
 subscription, no cloud you don't control.
 
-- **Tray + hotkey popover:** opens instantly, hides when you click away
-- **Tabs:** one note per tab; drag to reorder, `Ctrl+1…9` to jump
-- **Search across every note:** `Ctrl+F`
+- **Tray + hotkey popover:** opens straight into a capture box; hides when you click away
+- **Quick capture with tags:** type, add `#tags` (or type them inline), press `Ctrl+Enter`
+- **Timeline list:** every note is listed newest first with its timestamp, a preview and tag chips
+- **Filter** by text (`Ctrl+F`) or by clicking tags; click a note to edit it
 - **Magic mode:** inline AI completion from a model running *locally* through
   [Ollama](https://ollama.com). Press `Tab` to accept. Nothing leaves your machine.
 - **Four window sizes:** S / M / L / XL, plus adjustable text size
@@ -21,11 +22,14 @@ subscription, no cloud you don't control.
 
 ```
 ~/.local/share/jotbar/          (macOS: ~/Library/Application Support/jotbar)
-  notes/<id>.md                 one plain Markdown file per tab
-  index.json                    tab order + sync bookkeeping
+  notes/<id>.md                 one plain Markdown file per note
+  index.json                    timestamps + sync bookkeeping
 ```
 
-You can change the folder in Settings. Files you drop into `notes/` show up as tabs.
+Tags are ordinary `#hashtags` in the text. Tags added in the capture box are
+written as a final `#tag #tag` line. That means tags sync to every target and
+work in any Markdown editor (Obsidian, etc.). You can change the folder in
+Settings. Files you drop into `notes/` show up in the list.
 
 ## Sync: you choose where
 
@@ -41,8 +45,8 @@ Every target stores notes as readable `.md` files, so nothing is locked in.
 
 **Conflicts never lose text.** jotbar compares each note three ways (this
 device, the target, and the last version both agreed on). Whichever side
-changed wins. If both changed, the target's version stays in the tab and your
-local text is kept in a new tab marked `⚠ Conflicted copy`.
+changed wins. If both changed, the target's version keeps the note and your
+local text is saved as a new note marked `⚠ Conflicted copy`.
 
 ### Self-hosting the server
 
@@ -82,16 +86,18 @@ one word, `Esc` dismisses it.
 
 | | |
 |---|---|
-| `Ctrl+T` / `Ctrl+N` | new note |
-| `Ctrl+W` / middle-click tab | delete note (asks first if it isn't empty) |
-| `Ctrl+Tab`, `Ctrl+PgUp/PgDn` | next / previous tab |
-| `Ctrl+1…8`, `Ctrl+9` | jump to tab, last tab |
-| `Ctrl+F` / `Ctrl+K` | search all notes |
+| `Ctrl+Enter` | add the note in the capture box |
+| `Ctrl+Z` / `Ctrl+Shift+Z` or `Ctrl+Y` | undo / redo, word by word |
+| `Space` / `,` / `Enter` in the tag field | turn the word into a tag; `Tab` takes the suggestion |
+| `Ctrl+N` | jump to the capture box |
+| `Ctrl+F` / `Ctrl+K` | search notes; `↓` `↑` `Enter` to pick |
+| `Delete` on a selected note, `Ctrl+W` while editing | delete (asks first) |
+| `Esc` while editing / `Alt+←` | back to the list (an emptied note is removed) |
 | `Ctrl+S` | sync now |
 | `Ctrl+Shift+M` | toggle magic mode |
 | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | text size |
 | `Ctrl+,` | settings |
-| `Esc` | close panel / hide window |
+| `Esc` | close panel, clear filter, or hide window |
 
 ### Global hotkey
 

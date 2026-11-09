@@ -7,18 +7,48 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header id="bar" data-tauri-drag-region>
-    <nav id="tabs" role="tablist" aria-label="Notes"></nav>
-    <button id="new-tab" class="icon" title="New note (Ctrl+T)" aria-label="New note">+</button>
-    <span class="spacer" data-tauri-drag-region></span>
-    <button id="open-search" class="icon" title="Search all notes (Ctrl+F)" aria-label="Search">⌕</button>
-    <button id="open-settings" class="icon" title="Settings (Ctrl+,)" aria-label="Settings">⚙</button>
-  </header>
+  <!-- ============ list view: capture + timeline ============ -->
+  <section id="list-view" class="view">
+    <form id="capture" autocomplete="off">
+      <div class="ghost-wrap">
+        <div class="ghost txt" aria-hidden="true"></div>
+        <textarea id="capture-text" class="txt" rows="2" spellcheck="false"
+                  placeholder="Jot something…  (#tags work inline too)"></textarea>
+      </div>
+      <div class="tag-row">
+        <div id="capture-tags" class="tag-input">
+          <span class="hash">#</span>
+          <input id="tag-entry" placeholder="tags" aria-label="Tags (space or comma to add)" />
+        </div>
+        <button id="add-note" type="submit" class="primary" title="Add note (Ctrl+Enter)">Add <kbd>Ctrl ↵</kbd></button>
+      </div>
+      <div id="tag-suggest" class="chips" hidden></div>
+    </form>
 
-  <main id="editor-wrap">
-    <div id="ghost" aria-hidden="true"></div>
-    <textarea id="editor" spellcheck="false" autocomplete="off" placeholder="Start typing…"></textarea>
-  </main>
+    <div id="filter-row">
+      <input id="filter" type="search" placeholder="Search notes…  (Ctrl+F)" aria-label="Search notes" />
+      <button id="open-settings" class="icon" title="Settings (Ctrl+,)" aria-label="Settings">⚙</button>
+    </div>
+    <div id="tag-filter" class="chips scroll" aria-label="Filter by tag"></div>
+
+    <ul id="notes" role="listbox" aria-label="Notes"></ul>
+    <div id="empty" class="empty" hidden></div>
+  </section>
+
+  <!-- ============ edit view: one note ============ -->
+  <section id="edit-view" class="view" hidden>
+    <header class="edit-head">
+      <button id="back" class="icon" title="Back to all notes (Esc)" aria-label="Back">←</button>
+      <span id="edit-meta" class="muted"></span>
+      <span class="spacer"></span>
+      <button id="delete-note" class="icon" title="Delete note (Ctrl+W)" aria-label="Delete note">🗑</button>
+    </header>
+    <div id="edit-tags" class="chips"></div>
+    <div class="ghost-wrap fill">
+      <div class="ghost txt" aria-hidden="true"></div>
+      <textarea id="editor" class="txt" spellcheck="false" placeholder="Empty note — it is removed when you go back"></textarea>
+    </div>
+  </section>
 
   <footer id="status">
     <span id="save-state"></span>
@@ -26,12 +56,6 @@
     <button id="magic-toggle" class="chip" title="Magic mode: local AI completion (Ctrl+Shift+M). Tab accepts.">✦ magic</button>
     <button id="sync-state" class="chip" title="Sync now (Ctrl+S)"></button>
   </footer>
-
-  <!-- search across every note -->
-  <section id="search" class="overlay" hidden>
-    <input id="search-input" type="search" placeholder="Search all notes…" autocomplete="off" />
-    <ul id="search-results" role="listbox"></ul>
-  </section>
 
   <!-- confirm delete -->
   <section id="confirm" class="overlay small" hidden>
@@ -99,7 +123,7 @@
       <label for="sync-interval">Sync every (seconds)</label>
       <input id="sync-interval" type="number" min="10" />
     </div>
-    <div class="row">
+    <div class="row" id="test-row">
       <button id="test-target">Test connection</button>
       <small id="target-result" class="muted"></small>
     </div>

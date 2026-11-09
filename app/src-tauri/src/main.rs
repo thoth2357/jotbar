@@ -6,7 +6,7 @@ mod config;
 use config::Config;
 use jotbar_core::remote::{Remote, Target};
 use jotbar_core::sync::{sync, SyncReport};
-use jotbar_core::{now_ms, NoteMeta, SearchHit, Store};
+use jotbar_core::{now_ms, with_tags, NoteList, NoteMeta, Store};
 use serde::Serialize;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -82,9 +82,10 @@ fn register_hotkey(app: &AppHandle, hotkey: &str) {
 
 // ---------- notes ----------
 
+/// The timeline: newest first, filtered by text and/or tags.
 #[tauri::command]
-fn list_notes(s: State<AppState>) -> Vec<NoteMeta> {
-    lock(&s.store).list()
+fn list_notes(s: State<AppState>, query: Option<String>, tags: Option<Vec<String>>) -> NoteList {
+    lock(&s.store).summaries(query.as_deref().unwrap_or(""), &tags.unwrap_or_default())
 }
 
 #[tauri::command]
@@ -92,9 +93,14 @@ fn read_note(s: State<AppState>, id: String) -> CmdResult<String> {
     lock(&s.store).read(&id).map_err(err)
 }
 
+/// Quick capture: text plus tags (stored as a trailing `#tag` line).
 #[tauri::command]
-fn create_note(s: State<AppState>, after: Option<String>) -> CmdResult<NoteMeta> {
-    lock(&s.store).create_after("", after.as_deref()).map_err(err)
+fn create_note(s: State<AppState>, content: String, tags: Vec<String>) -> CmdResult<NoteMeta> {
+    let content = with_tags(content.trim_end(), &tags);
+    if content.trim().is_empty() {
+        return Err("note is empty".into());
+    }
+    lock(&s.store).create(&content).map_err(err)
 }
 
 #[tauri::command]
@@ -105,16 +111,6 @@ fn save_note(s: State<AppState>, id: String, content: String) -> CmdResult<NoteM
 #[tauri::command]
 fn delete_note(s: State<AppState>, id: String) -> CmdResult<()> {
     lock(&s.store).delete(&id).map_err(err)
-}
-
-#[tauri::command]
-fn reorder_notes(s: State<AppState>, ids: Vec<String>) -> CmdResult<()> {
-    lock(&s.store).reorder(&ids).map_err(err)
-}
-
-#[tauri::command]
-fn search_notes(s: State<AppState>, query: String) -> Vec<SearchHit> {
-    lock(&s.store).search(&query, 50)
 }
 
 // ---------- config ----------
@@ -326,8 +322,7 @@ fn main() {
             hotkey_error: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
-            list_notes, read_note, create_note, save_note, delete_note, reorder_notes,
-            search_notes, get_config, set_config, hide_window, theme, sync_now,
+            list_notes, read_note, create_note, save_note, delete_note, get_config, set_config, hide_window, theme, sync_now,
             sync_status, test_target, complete, magic_models
         ])
         .on_window_event(|w, e| {
