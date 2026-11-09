@@ -13,7 +13,7 @@
         "label": "main",
         "title": "jotbar",
         "width": 440,
-        "height": 540,
+        "height": 600,
         "minWidth": 300,
         "minHeight": 260,
         "decorations": false,

@@ -6,7 +6,7 @@ pub mod store;
 pub mod sync;
 
 pub use proto::*;
-pub use store::{NoteMeta, SearchHit, Store};
+pub use store::{tags_of, with_tags, NoteList, NoteMeta, NoteSummary, Store};
 
 use sha2::{Digest, Sha256};
 

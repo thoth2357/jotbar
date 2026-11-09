@@ -115,11 +115,13 @@ pub fn expand_home(p: &str) -> std::path::PathBuf {
 // One self-contained file per note, so file-sync tools (Syncthing etc.) can
 // never deliver content and metadata out of step:
 //
-//   <!-- jotbar:{"updated_at":1731150000000,"deleted":false} -->
+//   <!-- jotbar:{"created_at":1731150000000,"updated_at":1731150000000,"deleted":false} -->
 //   the note text…
 
 #[derive(Serialize, Deserialize)]
 struct Header {
+    #[serde(default)]
+    created_at: i64,
     updated_at: i64,
     deleted: bool,
 }
@@ -127,8 +129,8 @@ struct Header {
 const PREFIX: &str = "<!-- jotbar:";
 const SUFFIX: &str = " -->";
 
-pub fn encode_note(content: &str, updated_at: i64, deleted: bool) -> String {
-    let h = serde_json::to_string(&Header { updated_at, deleted }).expect("header serialises");
+pub fn encode_note(content: &str, created_at: i64, updated_at: i64, deleted: bool) -> String {
+    let h = serde_json::to_string(&Header { created_at, updated_at, deleted }).expect("header serialises");
     let body = if deleted { "" } else { content };
     format!("{PREFIX}{h}{SUFFIX}\n{body}")
 }
@@ -141,13 +143,14 @@ pub fn decode_note(id: &str, raw: &str) -> RemoteNote {
         let h: Header = serde_json::from_str(json).ok()?;
         Some((h, rest))
     });
-    let (updated_at, deleted, content) = match parsed {
-        Some((h, rest)) => (h.updated_at, h.deleted, if h.deleted { "" } else { rest }),
-        None => (0, false, raw),
+    let (created_at, updated_at, deleted, content) = match parsed {
+        Some((h, rest)) => (h.created_at, h.updated_at, h.deleted, if h.deleted { "" } else { rest }),
+        None => (0, 0, false, raw),
     };
     RemoteNote {
         id: id.to_string(),
         content: content.to_string(),
+        created_at,
         updated_at,
         hash: crate::content_hash(content, deleted),
         deleted,
@@ -160,10 +163,10 @@ mod tests {
 
     #[test]
     fn note_format_roundtrip() {
-        let raw = encode_note("hi\nthere", 5, false);
+        let raw = encode_note("hi\nthere", 4, 5, false);
         let n = decode_note("x", &raw);
-        assert_eq!((n.content.as_str(), n.updated_at, n.deleted), ("hi\nthere", 5, false));
-        let d = decode_note("x", &encode_note("gone", 6, true));
+        assert_eq!((n.content.as_str(), n.created_at, n.updated_at, n.deleted), ("hi\nthere", 4, 5, false));
+        let d = decode_note("x", &encode_note("gone", 4, 6, true));
         assert!(d.deleted && d.content.is_empty());
         assert_eq!(decode_note("x", "plain").content, "plain");
     }

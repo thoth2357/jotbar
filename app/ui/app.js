@@ -1,108 +1,338 @@
 // jotbar frontend: plain JS, no build step.
+// Two views: a list (capture box + timeline of notes) and an editor for one note.
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 const $ = (id) => document.getElementById(id);
-
-const editor = $("editor");
-const ghost = $("ghost");
-const tabsEl = $("tabs");
-
-const state = {
-  notes: [],          // NoteMeta[] in tab order
-  current: null,      // id of the open note
-  dirty: false,       // editor has unsaved text
-  saveTimer: null,
-  syncTimer: null,
-  config: null,       // Config from the backend
-  suggestion: "",     // magic-mode ghost text
-  magicTimer: null,
-  magicSeq: 0,
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
 };
 
-// ---------------- notes & tabs ----------------
+const state = {
+  config: null,
+  view: "list",
+  notes: [],            // NoteSummary[] currently shown
+  allTags: [],          // [tag, count][]
+  filterTags: [],       // tags the list is filtered by
+  captureTags: [],      // tags chosen for the note being captured
+  sel: -1,              // keyboard-selected list row
+  current: null,        // id open in the editor
+  currentMeta: null,
+  dirty: false,
+  saveTimer: null,
+  syncTimer: null,
+};
 
-async function loadNotes() {
-  state.notes = await invoke("list_notes");
-  if (!state.notes.some((n) => n.id === state.current)) {
-    state.current = state.notes[0]?.id ?? null;
-    await openNote(state.current, { force: true });
-  }
-  renderTabs();
+// ---------------- time formatting ----------------
+
+const timeFmt = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
+const dayFmt = new Intl.DateTimeFormat(undefined, { weekday: "short" });
+const dateFmt = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
+const yearFmt = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" });
+const fullFmt = new Intl.DateTimeFormat(undefined, { dateStyle: "full", timeStyle: "short" });
+
+function when(ms) {
+  const d = new Date(ms);
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const day = 86400000;
+  if (ms >= startOfToday) return timeFmt.format(d);
+  if (ms >= startOfToday - day) return "Yesterday " + timeFmt.format(d);
+  if (ms >= startOfToday - 6 * day) return dayFmt.format(d) + " " + timeFmt.format(d);
+  if (d.getFullYear() === now.getFullYear()) return dateFmt.format(d);
+  return yearFmt.format(d);
 }
 
-function renderTabs() {
-  tabsEl.replaceChildren(
+function ago(ms) {
+  const s = Math.round((Date.now() - ms) / 1000);
+  if (s < 10) return "just now";
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+  return when(ms);
+}
+
+// ---------------- tags ----------------
+
+const TAG_RE = /(^|[\s(])#([\p{L}\p{N}_\-/]+)/gu;
+function tagsOf(text) {
+  const out = [];
+  for (const m of text.matchAll(TAG_RE)) {
+    const t = m[2].replace(/[-/]+$/, "").toLowerCase();
+    if (/\p{L}/u.test(t) && !out.includes(t)) out.push(t);
+  }
+  return out;
+}
+const cleanTag = (t) => t.trim().replace(/^#+/, "").toLowerCase().replace(/[^\p{L}\p{N}_\-/]/gu, "");
+
+function tagChip(tag, { count, on, onClick, onRemove } = {}) {
+  const c = el(onClick ? "button" : "span", "tag" + (on ? " on" : ""));
+  if (onClick) { c.type = "button"; c.onclick = onClick; }
+  c.append("#" + tag);
+  if (count != null) c.append(el("span", "n", count));
+  if (onRemove) {
+    const x = el("span", "x", "×");
+    x.onclick = (e) => { e.stopPropagation(); onRemove(); };
+    c.append(x);
+  }
+  return c;
+}
+
+// ---------------- list view ----------------
+
+async function refreshList() {
+  const res = await invoke("list_notes", { query: $("filter").value, tags: state.filterTags });
+  state.notes = res.notes;
+  state.allTags = res.tags;
+  // drop filter tags that no longer exist
+  state.filterTags = state.filterTags.filter((t) => res.tags.some(([x]) => x === t));
+  state.sel = Math.min(state.sel, state.notes.length - 1);
+  renderList();
+  renderTagFilter();
+}
+
+function renderTagFilter() {
+  $("tag-filter").replaceChildren(
+    ...state.allTags.map(([t, n]) =>
+      tagChip(t, {
+        count: n,
+        on: state.filterTags.includes(t),
+        onClick: () => toggleFilterTag(t),
+      })
+    )
+  );
+}
+
+function toggleFilterTag(t) {
+  state.filterTags = state.filterTags.includes(t)
+    ? state.filterTags.filter((x) => x !== t)
+    : [...state.filterTags, t];
+  refreshList();
+}
+
+function highlight(text, q) {
+  const frag = document.createDocumentFragment();
+  q = q.trim();
+  const i = q ? text.toLowerCase().indexOf(q.toLowerCase()) : -1;
+  if (i < 0) { frag.append(text); return frag; }
+  const m = el("mark", null, text.slice(i, i + q.length));
+  frag.append(text.slice(0, i), m, text.slice(i + q.length));
+  return frag;
+}
+
+function renderList() {
+  const q = $("filter").value;
+  const ul = $("notes");
+  ul.replaceChildren(
     ...state.notes.map((n, i) => {
-      const b = document.createElement("button");
-      b.className = "tab" + (n.id === state.current ? " active" : "");
-      b.role = "tab";
-      b.draggable = true;
-      b.dataset.id = n.id;
-      b.title = n.title;
-      if (i < 9) {
-        const num = document.createElement("span");
-        num.className = "num";
-        num.textContent = i + 1;
-        b.append(num);
+      const li = el("li", i === state.sel ? "sel" : "");
+      li.tabIndex = -1;
+      li.role = "option";
+      li.dataset.id = n.id;
+      const title = el("span", "title");
+      title.append(highlight(n.title, q));
+      const t = el("time", null, when(n.created_at));
+      t.dateTime = new Date(n.created_at).toISOString();
+      t.title = "Created " + fullFmt.format(new Date(n.created_at)) +
+        (n.updated_at - n.created_at > 60000 ? "\nEdited " + fullFmt.format(new Date(n.updated_at)) : "");
+      li.append(title, t);
+      if (n.preview) {
+        const p = el("div", "preview");
+        p.append(highlight(n.preview, q));
+        li.append(p);
       }
-      b.append(n.title);
-      b.onclick = () => openNote(n.id);
-      b.onauxclick = (e) => e.button === 1 && askDelete(n.id);
-      b.ondragstart = (e) => e.dataTransfer.setData("text/plain", n.id);
-      b.ondragover = (e) => { e.preventDefault(); b.classList.add("drop-before"); };
-      b.ondragleave = () => b.classList.remove("drop-before");
-      b.ondrop = (e) => {
-        e.preventDefault();
-        b.classList.remove("drop-before");
-        moveTab(e.dataTransfer.getData("text/plain"), n.id);
-      };
-      return b;
+      if (n.tags.length) {
+        const chips = el("div", "chips");
+        chips.append(...n.tags.map((tag) => tagChip(tag, {
+          on: state.filterTags.includes(tag),
+          onClick: (e) => { e.stopPropagation(); toggleFilterTag(tag); },
+        })));
+        li.append(chips);
+      }
+      li.onclick = () => openNote(n.id);
+      return li;
     })
   );
-  tabsEl.querySelector(".active")?.scrollIntoView({ inline: "nearest" });
+  const empty = $("empty");
+  empty.hidden = state.notes.length > 0;
+  empty.textContent = q || state.filterTags.length
+    ? "No notes match."
+    : "No notes yet.\nType above and press Ctrl+Enter.";
+  ul.querySelector(".sel")?.scrollIntoView({ block: "nearest" });
 }
 
-async function moveTab(id, beforeId) {
-  if (id === beforeId) return;
-  const ids = state.notes.map((n) => n.id).filter((x) => x !== id);
-  ids.splice(ids.indexOf(beforeId), 0, id);
-  await invoke("reorder_notes", { ids });
-  await loadNotes();
+function moveSel(d) {
+  if (!state.notes.length) return;
+  state.sel = Math.max(0, Math.min(state.notes.length - 1, state.sel + d));
+  renderList();
+  $("notes").querySelector(".sel")?.focus();
 }
 
-async function openNote(id, { force = false, select = null } = {}) {
-  if (!id) return;
-  if (id === state.current && !force) return editor.focus();
-  await flushSave();
-  state.current = id;
-  editor.value = await invoke("read_note", { id });
-  clearGhost();
-  renderTabs();
-  editor.focus();
-  if (select) {
-    editor.setSelectionRange(select[0], select[1]);
-    scrollToCaret();
-  } else {
-    editor.setSelectionRange(editor.value.length, editor.value.length);
-    editor.scrollTop = editor.scrollHeight;
+$("filter").addEventListener("input", () => { state.sel = -1; refreshList(); });
+$("filter").addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown") { e.preventDefault(); state.sel = -1; moveSel(1); }
+  if (e.key === "Enter" && state.notes.length) openNote(state.notes[Math.max(0, state.sel)].id);
+});
+$("notes").addEventListener("keydown", (e) => {
+  const n = state.notes[state.sel];
+  if (e.key === "ArrowDown") { e.preventDefault(); moveSel(1); }
+  else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    if (state.sel <= 0) { state.sel = -1; renderList(); $("filter").focus(); } else moveSel(-1);
+  } else if (e.key === "Enter" && n) openNote(n.id);
+  else if ((e.key === "Delete" || e.key === "Backspace") && n) askDelete(n.id, n.title);
+});
+
+// ---------------- capture ----------------
+
+const captureText = $("capture-text");
+const tagEntry = $("tag-entry");
+
+function autoGrow() {
+  captureText.style.height = "auto";
+  captureText.style.height = Math.min(captureText.scrollHeight, 220) + "px";
+}
+
+function renderCaptureTags() {
+  const box = $("capture-tags");
+  box.querySelectorAll(".tag").forEach((c) => c.remove());
+  const chips = state.captureTags.map((t) =>
+    tagChip(t, { onRemove: () => { state.captureTags = state.captureTags.filter((x) => x !== t); renderCaptureTags(); } })
+  );
+  for (const c of chips) box.insertBefore(c, tagEntry);
+  renderSuggestions();
+}
+
+function addCaptureTag(raw) {
+  const t = cleanTag(raw);
+  if (t && /\p{L}/u.test(t) && !state.captureTags.includes(t)) state.captureTags.push(t);
+  tagEntry.value = "";
+  renderCaptureTags();
+}
+
+function renderSuggestions() {
+  const box = $("tag-suggest");
+  const q = cleanTag(tagEntry.value);
+  const inline = tagsOf(captureText.value);
+  const show = document.activeElement === tagEntry;
+  const sugg = state.allTags
+    .map(([t]) => t)
+    .filter((t) => !state.captureTags.includes(t) && !inline.includes(t) && t.startsWith(q))
+    .slice(0, 12);
+  box.hidden = !show || !sugg.length;
+  box.replaceChildren(...sugg.map((t) => {
+    const c = tagChip(t, { onClick: () => { addCaptureTag(t); tagEntry.focus(); } });
+    c.onmousedown = (e) => e.preventDefault(); // keep focus in the tag field
+    return c;
+  }));
+}
+
+tagEntry.addEventListener("input", () => {
+  if (/[\s,]/.test(tagEntry.value)) {
+    tagEntry.value.split(/[\s,]+/).forEach((p, i, a) => (i < a.length - 1 ? addCaptureTag(p) : (tagEntry.value = p)));
   }
+  renderSuggestions();
+});
+tagEntry.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) return; // handled by the form
+  if (e.key === "Enter") {
+    e.preventDefault();
+    if (tagEntry.value.trim()) addCaptureTag(tagEntry.value);
+    else submitCapture();
+  } else if (e.key === "Backspace" && !tagEntry.value && state.captureTags.length) {
+    state.captureTags.pop();
+    renderCaptureTags();
+  } else if (e.key === "Tab" && !e.shiftKey && tagEntry.value.trim()) {
+    e.preventDefault();
+    const first = $("tag-suggest").querySelector(".tag");
+    addCaptureTag(first && !$("tag-suggest").hidden ? first.textContent.slice(1) : tagEntry.value);
+  }
+});
+tagEntry.addEventListener("focus", renderSuggestions);
+tagEntry.addEventListener("blur", () => {
+  if (tagEntry.value.trim()) addCaptureTag(tagEntry.value);
+  $("tag-suggest").hidden = true;
+});
+$("capture-tags").onclick = () => tagEntry.focus();
+
+async function submitCapture() {
+  if (tagEntry.value.trim()) addCaptureTag(tagEntry.value);
+  const text = captureText.value;
+  if (!text.trim() && !state.captureTags.length) return captureText.focus();
+  try {
+    await invoke("create_note", { content: text, tags: state.captureTags });
+  } catch (e) {
+    return setSaveState(String(e));
+  }
+  captureText.value = "";
+  state.captureTags = [];
+  captureMagic.clear();
+  renderCaptureTags();
+  autoGrow();
+  $("filter").value = "";
+  state.sel = -1;
+  await refreshList();
+  setSaveState("added " + timeFmt.format(new Date()));
+  scheduleSync();
+  captureText.focus();
 }
 
-async function newNote() {
+$("capture").addEventListener("submit", (e) => { e.preventDefault(); submitCapture(); });
+captureText.addEventListener("input", () => { autoGrow(); renderSuggestions(); });
+// Ctrl+Enter adds the note from anywhere in the capture box.
+$("capture").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submitCapture(); }
+});
+
+// ---------------- edit view ----------------
+
+const editor = $("editor");
+
+async function openNote(id) {
+  state.current = id;
+  state.currentMeta = state.notes.find((n) => n.id === id) ?? null;
+  editor.value = await invoke("read_note", { id });
+  state.dirty = false;
+  showView("edit");
+  renderEditHead();
+  editor.focus();
+  editor.setSelectionRange(editor.value.length, editor.value.length);
+  editor.scrollTop = editor.scrollHeight;
+}
+
+function renderEditHead() {
+  const m = state.currentMeta;
+  $("edit-meta").textContent = m
+    ? when(m.created_at) + (m.updated_at - m.created_at > 60000 ? " · edited " + ago(m.updated_at) : "")
+    : "";
+  $("edit-meta").title = m ? "Created " + fullFmt.format(new Date(m.created_at)) : "";
+  $("edit-tags").replaceChildren(...tagsOf(editor.value).map((t) => tagChip(t)));
+}
+
+async function backToList() {
   await flushSave();
-  const meta = await invoke("create_note", { after: state.current });
-  state.current = meta.id;
-  await loadNotes();
-  await openNote(meta.id, { force: true });
+  // A note emptied in the editor is removed rather than left blank.
+  if (state.current && !editor.value.trim()) {
+    await invoke("delete_note", { id: state.current });
+    scheduleSync();
+  }
+  state.current = null;
+  showView("list");
+  await refreshList();
+  const i = state.sel;
+  if (i >= 0 && state.notes[i]) $("notes").querySelector(".sel")?.focus();
+  else captureText.focus();
 }
 
-function cycleTab(dir) {
-  const i = state.notes.findIndex((n) => n.id === state.current);
-  const n = state.notes[(i + dir + state.notes.length) % state.notes.length];
-  if (n) openNote(n.id);
+function showView(v) {
+  state.view = v;
+  $("list-view").hidden = v !== "list";
+  $("edit-view").hidden = v !== "edit";
+  captureMagic.clear();
+  editorMagic.clear();
 }
-
-// ---------------- saving ----------------
 
 function scheduleSave() {
   state.dirty = true;
@@ -117,11 +347,7 @@ async function flushSave() {
   state.dirty = false;
   try {
     const meta = await invoke("save_note", { id: state.current, content: editor.value });
-    const n = state.notes.find((x) => x.id === meta.id);
-    if (n && n.title !== meta.title) {
-      n.title = meta.title;
-      renderTabs();
-    }
+    if (state.currentMeta) state.currentMeta.updated_at = meta.updated_at;
     setSaveState("saved");
     scheduleSync();
   } catch (e) {
@@ -132,176 +358,119 @@ async function flushSave() {
 
 function setSaveState(t) { $("save-state").textContent = t; }
 
+editor.addEventListener("input", () => { scheduleSave(); renderEditHead(); });
+editor.addEventListener("blur", flushSave);
+$("back").onclick = backToList;
+$("delete-note").onclick = () => askDelete(state.current, state.currentMeta?.title);
+
 // ---------------- delete ----------------
 
 let pendingDelete = null;
 
-async function askDelete(id) {
-  await flushSave();
-  const n = state.notes.find((x) => x.id === id);
-  const text = await invoke("read_note", { id });
-  if (!text.trim()) return doDelete(id); // empty: no need to ask
+function askDelete(id, title) {
+  if (!id) return;
   pendingDelete = id;
-  $("confirm-text").textContent = `Delete “${n?.title ?? "note"}”?`;
-  show("confirm");
+  $("confirm-text").textContent = `Delete “${title || "this note"}”?`;
+  showOverlay("confirm");
   $("confirm-yes").focus();
 }
 
-async function doDelete(id) {
-  hide("confirm");
-  const i = state.notes.findIndex((n) => n.id === id);
+$("confirm-yes").onclick = async () => {
+  const id = pendingDelete;
+  hideOverlay("confirm");
+  if (!id) return;
+  clearTimeout(state.saveTimer);
+  state.dirty = false;
   await invoke("delete_note", { id });
-  if (id === state.current) state.current = null;
-  state.notes = await invoke("list_notes");
-  const next = state.notes[Math.min(i, state.notes.length - 1)];
-  state.current = null;
-  await openNote(next.id, { force: true });
-}
-
-$("confirm-yes").onclick = () => pendingDelete && doDelete(pendingDelete);
-$("confirm-no").onclick = () => { hide("confirm"); editor.focus(); };
-
-// ---------------- search (all notes) ----------------
-
-let hits = [];
-let sel = 0;
-
-function openSearch() {
-  show("search");
-  const q = $("search-input");
-  q.value = editor.value.slice(editor.selectionStart, editor.selectionEnd).split("\n")[0];
-  q.focus();
-  q.select();
-  runSearch();
-}
-
-async function runSearch() {
-  const q = $("search-input").value;
-  hits = q.trim() ? await invoke("search_notes", { query: q }) : [];
-  sel = 0;
-  renderHits(q);
-}
-
-function renderHits(q) {
-  const ul = $("search-results");
-  if (!q.trim()) return ul.replaceChildren();
-  if (!hits.length) {
-    const li = document.createElement("li");
-    li.className = "empty";
-    li.textContent = "No matches";
-    return ul.replaceChildren(li);
+  scheduleSync();
+  if (state.current === id) {
+    state.current = null;
+    showView("list");
   }
-  ul.replaceChildren(
-    ...hits.map((h, i) => {
-      const li = document.createElement("li");
-      li.className = i === sel ? "sel" : "";
-      const t = document.createElement("div");
-      t.className = "t";
-      t.textContent = h.title;
-      const s = document.createElement("div");
-      s.className = "s";
-      const idx = h.snippet.toLowerCase().indexOf(q.trim().toLowerCase());
-      if (idx >= 0) {
-        const m = document.createElement("mark");
-        m.textContent = h.snippet.slice(idx, idx + q.trim().length);
-        s.append(h.snippet.slice(0, idx), m, h.snippet.slice(idx + q.trim().length));
-      } else s.textContent = h.snippet;
-      li.append(t, s);
-      li.onclick = () => pickHit(i);
-      return li;
-    })
-  );
-  ul.querySelector(".sel")?.scrollIntoView({ block: "nearest" });
-}
-
-async function pickHit(i) {
-  const h = hits[i];
-  if (!h) return;
-  const len = $("search-input").value.trim().length;
-  hide("search");
-  // offsets from the backend are in characters; JS strings are UTF-16
-  const text = await invoke("read_note", { id: h.id });
-  const start = [...text].slice(0, h.offset).join("").length;
-  await openNote(h.id, { force: true, select: [start, start + len] });
-}
-
-$("search-input").oninput = runSearch;
-$("search-input").onkeydown = (e) => {
-  if (e.key === "ArrowDown") { sel = Math.min(sel + 1, hits.length - 1); renderHits($("search-input").value); e.preventDefault(); }
-  if (e.key === "ArrowUp") { sel = Math.max(sel - 1, 0); renderHits($("search-input").value); e.preventDefault(); }
-  if (e.key === "Enter") pickHit(sel);
+  await refreshList();
+  captureText.focus();
 };
-
-function scrollToCaret() {
-  // Measure caret position with the mirror div, then scroll the textarea to it.
-  const before = document.createElement("span");
-  const mark = document.createElement("span");
-  mark.textContent = "|";
-  before.textContent = editor.value.slice(0, editor.selectionStart);
-  ghost.replaceChildren(before, mark);
-  editor.scrollTop = Math.max(0, mark.offsetTop - editor.clientHeight / 3);
-  clearGhost();
-}
+$("confirm-no").onclick = () => { hideOverlay("confirm"); focusView(); };
 
 // ---------------- magic mode (ghost-text completion) ----------------
 
 function magicOn() { return !!state.config?.magic?.enabled && !!state.config?.magic?.model; }
 
-function clearGhost() {
-  state.suggestion = "";
-  state.magicSeq++;
-  ghost.replaceChildren();
-}
+/// Attach inline AI completion to a textarea whose sibling .ghost mirrors it.
+function makeMagic(ta, onAccept) {
+  const ghost = ta.parentElement.querySelector(".ghost");
+  let suggestion = "";
+  let timer = null;
+  let seq = 0;
 
-function renderGhost() {
-  const pos = editor.selectionStart;
-  const g = document.createElement("span");
-  g.className = "g";
-  g.textContent = state.suggestion;
-  ghost.replaceChildren(editor.value.slice(0, pos), g, editor.value.slice(pos));
-  ghost.scrollTop = editor.scrollTop;
-}
-
-function scheduleMagic() {
-  clearTimeout(state.magicTimer);
-  if (!magicOn()) return;
-  state.magicTimer = setTimeout(requestMagic, 650);
-}
-
-async function requestMagic() {
-  const pos = editor.selectionStart;
-  if (pos !== editor.selectionEnd || document.activeElement !== editor) return;
-  const before = editor.value.slice(0, pos);
-  const after = editor.value.slice(pos);
-  // Only complete at the end of a line, after something was typed.
-  if (!before.trim() || (after && !after.startsWith("\n"))) return;
-  const seq = ++state.magicSeq;
-  $("magic-toggle").textContent = "✦ thinking…";
-  try {
-    let s = await invoke("complete", { before, after });
-    if (seq !== state.magicSeq || editor.selectionStart !== pos || editor.value.slice(0, pos) !== before) return;
-    // Add a space if the model forgot one between words.
-    if (s && /\S$/.test(before) && /^[A-Za-z0-9]/.test(s) && /[A-Za-z0-9.,;:!?]$/.test(before)) s = " " + s;
-    state.suggestion = s;
-    if (s) renderGhost();
-  } catch (e) {
-    $("magic-toggle").title = "Magic mode error: " + e;
-  } finally {
-    renderMagicChip();
+  function clear() {
+    suggestion = "";
+    seq++;
+    clearTimeout(timer);
+    ghost.replaceChildren();
   }
+  function render() {
+    const pos = ta.selectionStart;
+    const g = el("span", "g", suggestion);
+    ghost.replaceChildren(ta.value.slice(0, pos), g, ta.value.slice(pos));
+    ghost.scrollTop = ta.scrollTop;
+  }
+  async function request() {
+    const pos = ta.selectionStart;
+    if (pos !== ta.selectionEnd || document.activeElement !== ta) return;
+    const before = ta.value.slice(0, pos);
+    const after = ta.value.slice(pos);
+    if (!before.trim() || (after && !after.startsWith("\n"))) return;
+    const my = ++seq;
+    $("magic-toggle").textContent = "✦ thinking…";
+    try {
+      let s = await invoke("complete", { before, after });
+      if (my !== seq || ta.selectionStart !== pos || ta.value.slice(0, pos) !== before) return;
+      if (s && /[\p{L}\p{N}.,;:!?]$/u.test(before) && /^[\p{L}\p{N}]/u.test(s)) s = " " + s;
+      suggestion = s;
+      if (s) render();
+    } catch (e) {
+      $("magic-toggle").title = "Magic mode error: " + e;
+    } finally {
+      renderMagicChip();
+    }
+  }
+  function accept(wordOnly) {
+    let s = suggestion;
+    if (wordOnly) s = s.match(/^\s*\S+/)?.[0] ?? s;
+    const rest = suggestion.slice(s.length);
+    ta.setRangeText(s, ta.selectionStart, ta.selectionEnd, "end");
+    onAccept();
+    if (rest) { suggestion = rest; render(); } else clear();
+  }
+
+  ta.addEventListener("input", () => {
+    clear();
+    if (magicOn()) timer = setTimeout(request, 650);
+  });
+  ta.addEventListener("scroll", () => (ghost.scrollTop = ta.scrollTop));
+  ta.addEventListener("click", clear);
+  ta.addEventListener("blur", clear);
+  ta.addEventListener("keydown", (e) => {
+    if (!suggestion) return;
+    if (e.key === "Tab" && !e.shiftKey) { e.preventDefault(); accept(false); }
+    else if (e.key === "ArrowRight" && e.ctrlKey) { e.preventDefault(); accept(true); }
+    else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); clear(); }
+    else if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) clear();
+  });
+  return { clear };
 }
 
-function acceptGhost(wordOnly = false) {
-  let s = state.suggestion;
-  if (wordOnly) s = s.match(/^\s*\S+/)?.[0] ?? s;
-  const rest = state.suggestion.slice(s.length);
-  editor.setRangeText(s, editor.selectionStart, editor.selectionEnd, "end");
-  scheduleSave();
-  if (rest) {
-    state.suggestion = rest;
-    renderGhost();
-  } else clearGhost();
-}
+const captureMagic = makeMagic(captureText, autoGrow);
+const editorMagic = makeMagic(editor, () => { scheduleSave(); renderEditHead(); });
+// Registered after magic mode so Tab accepts a suggestion before indenting.
+editor.addEventListener("keydown", (e) => {
+  if (e.key === "Tab" && !e.ctrlKey && !e.defaultPrevented) {
+    e.preventDefault();
+    editor.setRangeText("  ", editor.selectionStart, editor.selectionEnd, "end");
+    scheduleSave();
+  }
+});
 
 function renderMagicChip() {
   const c = $("magic-toggle");
@@ -316,60 +485,49 @@ async function toggleMagic() {
   if (!cfg.magic.model) return openSettings();
   cfg.magic.enabled = !cfg.magic.enabled;
   await applyConfig(cfg);
-  if (!cfg.magic.enabled) clearGhost();
+  captureMagic.clear();
+  editorMagic.clear();
 }
 
-// ---------------- editor events ----------------
+// ---------------- overlays & global keys ----------------
 
-editor.addEventListener("input", () => {
-  clearGhost();
-  scheduleSave();
-  scheduleMagic();
-});
-editor.addEventListener("scroll", () => (ghost.scrollTop = editor.scrollTop));
-editor.addEventListener("click", clearGhost);
-editor.addEventListener("blur", () => { clearTimeout(state.magicTimer); flushSave(); });
-editor.addEventListener("keydown", (e) => {
-  if (state.suggestion) {
-    if (e.key === "Tab" && !e.shiftKey) { e.preventDefault(); return acceptGhost(); }
-    if (e.key === "ArrowRight" && e.ctrlKey) { e.preventDefault(); return acceptGhost(true); }
-    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); return clearGhost(); }
-    if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) clearGhost();
-  }
-  if (e.key === "Tab" && !e.ctrlKey) {
-    e.preventDefault();
-    editor.setRangeText("  ", editor.selectionStart, editor.selectionEnd, "end");
-    scheduleSave();
-  }
-});
-
-// ---------------- global keys ----------------
+const OVERLAYS = ["confirm", "settings"];
+function showOverlay(id) {
+  for (const o of OVERLAYS) $(o).hidden = o !== id;
+}
+function hideOverlay(id) { $(id).hidden = true; }
+function focusView() { (state.view === "edit" ? editor : captureText).focus(); }
 
 document.addEventListener("keydown", (e) => {
   const mod = e.ctrlKey || e.metaKey;
   const k = e.key.toLowerCase();
   if (e.key === "Escape") {
-    for (const id of ["confirm", "search", "settings"]) {
-      if (!$(id).hidden) { hide(id); editor.focus(); return; }
+    for (const id of OVERLAYS) {
+      if (!$(id).hidden) { hideOverlay(id); focusView(); return; }
     }
-    flushSave().then(() => invoke("hide_window"));
+    if (state.view === "edit") return void backToList();
+    if ($("filter").value || state.filterTags.length) {
+      $("filter").value = "";
+      state.filterTags = [];
+      refreshList();
+      return captureText.focus();
+    }
+    invoke("hide_window");
     return;
   }
+  if (e.altKey && e.key === "ArrowLeft" && state.view === "edit") return void backToList();
   if (!mod) return;
-  if (k === "t" || k === "n") { e.preventDefault(); newNote(); }
-  else if (k === "w") { e.preventDefault(); askDelete(state.current); }
-  else if (k === "f" || k === "k" || (k === "p" && !e.shiftKey)) { e.preventDefault(); openSearch(); }
+  if (k === "n" || k === "t") {
+    e.preventDefault();
+    (state.view === "edit" ? backToList() : Promise.resolve()).then(() => captureText.focus());
+  } else if (k === "f" || k === "k") {
+    e.preventDefault();
+    (state.view === "edit" ? backToList() : Promise.resolve()).then(() => { $("filter").focus(); $("filter").select(); });
+  } else if (k === "w" && state.view === "edit") { e.preventDefault(); askDelete(state.current, state.currentMeta?.title); }
   else if (k === ",") { e.preventDefault(); openSettings(); }
   else if (k === "s") { e.preventDefault(); flushSave().then(syncNow); }
   else if (k === "m" && e.shiftKey) { e.preventDefault(); toggleMagic(); }
-  else if (e.key === "Tab" || e.key === "PageDown" || e.key === "PageUp") {
-    e.preventDefault();
-    cycleTab(e.shiftKey || e.key === "PageUp" ? -1 : 1);
-  } else if (/^[1-9]$/.test(e.key)) {
-    e.preventDefault();
-    const n = e.key === "9" ? state.notes.at(-1) : state.notes[+e.key - 1];
-    if (n) openNote(n.id);
-  } else if (k === "=" || k === "+" || k === "-" || k === "0") {
+  else if (k === "=" || k === "+" || k === "-" || k === "0") {
     e.preventDefault();
     const cfg = structuredClone(state.config);
     cfg.font_size = k === "0" ? 15 : Math.min(32, Math.max(10, cfg.font_size + (k === "-" ? -1 : 1)));
@@ -377,16 +535,8 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-$("new-tab").onclick = newNote;
-$("open-search").onclick = openSearch;
 $("open-settings").onclick = openSettings;
-$("close-settings").onclick = () => { hide("settings"); editor.focus(); };
-
-function show(id) {
-  for (const o of ["confirm", "search", "settings"]) if (o !== id) $(o).hidden = true;
-  $(id).hidden = false;
-}
-function hide(id) { $(id).hidden = true; }
+$("close-settings").onclick = () => { hideOverlay("settings"); focusView(); };
 
 // ---------------- sync status ----------------
 
@@ -398,15 +548,7 @@ function scheduleSync() {
 
 async function syncNow() {
   if (!state.config?.sync?.enabled) return openSettings();
-  try { await invoke("sync_now"); } catch (_) { /* shown via sync-status event */ }
-}
-
-function ago(ms) {
-  const s = Math.round((Date.now() - ms) / 1000);
-  if (s < 10) return "just now";
-  if (s < 60) return `${s}s ago`;
-  if (s < 3600) return `${Math.round(s / 60)}m ago`;
-  return `${Math.round(s / 3600)}h ago`;
+  try { await invoke("sync_now"); } catch (_) { /* reported via sync-status */ }
 }
 
 let syncStatus = {};
@@ -422,7 +564,10 @@ function renderSync() {
   c.title = syncStatus.error || "Sync now (Ctrl+S)";
 }
 $("sync-state").onclick = syncNow;
-setInterval(renderSync, 15000);
+setInterval(() => {
+  renderSync();
+  if (state.view === "list") renderList(); // keep "Yesterday"/times fresh
+}, 30000);
 
 // ---------------- settings ----------------
 
@@ -438,7 +583,7 @@ function selectTarget(v) {
   draftTarget = v;
   setSeg("target-seg", v);
   for (const f of document.querySelectorAll(".target-fields")) f.hidden = f.dataset.for !== v;
-  $("interval-field").hidden = $("test-target").parentElement.hidden = v === "off";
+  $("interval-field").hidden = $("test-row").hidden = v === "off";
   $("target-result").textContent = "";
 }
 
@@ -468,7 +613,7 @@ async function openSettings() {
   $("magic-endpoint").value = c.magic.endpoint;
   $("magic-model").value = c.magic.model;
   $("settings-error").textContent = "";
-  show("settings");
+  showOverlay("settings");
   loadModels();
 }
 
@@ -490,8 +635,7 @@ async function loadModels() {
   try {
     const models = await invoke("magic_models", { endpoint: $("magic-endpoint").value || "http://127.0.0.1:11434" });
     chips.replaceChildren(...models.map((m) => {
-      const b = document.createElement("button");
-      b.textContent = m;
+      const b = el("button", null, m);
       b.onclick = () => { $("magic-model").value = m; };
       return b;
     }));
@@ -530,8 +674,8 @@ $("save-settings").onclick = async () => {
   cfg.magic.model = $("magic-model").value.trim();
   try {
     await applyConfig(cfg);
-    hide("settings");
-    editor.focus();
+    hideOverlay("settings");
+    focusView();
     if (cfg.sync.enabled) syncNow();
   } catch (e) {
     $("settings-error").textContent = String(e);
@@ -548,6 +692,7 @@ async function applyConfig(cfg) {
 
 function applyLook() {
   document.documentElement.style.setProperty("--text-size", state.config.font_size + "px");
+  autoGrow();
 }
 
 // pywal integration: match the desktop palette when ~/.cache/wal/colors.json exists.
@@ -561,8 +706,8 @@ async function applyTheme() {
   r.style.setProperty("--bg", wal.special.background);
   r.style.setProperty("--bg2", wal.colors.color0);
   r.style.setProperty("--fg", fg);
-  r.style.setProperty("--muted", `rgba(${rgb},0.68)`);
-  r.style.setProperty("--faint", `rgba(${rgb},0.45)`);
+  r.style.setProperty("--muted", `rgba(${rgb},0.72)`);
+  r.style.setProperty("--faint", `rgba(${rgb},0.5)`);
   r.style.setProperty("--line", `rgba(${rgb},0.14)`);
   r.style.setProperty("--accent", wal.colors.color4);
 }
@@ -570,13 +715,13 @@ async function applyTheme() {
 // ---------------- backend events ----------------
 
 listen("notes-changed", async () => {
-  const list = await invoke("list_notes");
-  state.notes = list;
-  if (!list.some((n) => n.id === state.current)) {
-    state.current = null;
-    await openNote(list[0]?.id, { force: true });
-  } else if (!state.dirty) {
-    // Reload the open note in place, keeping the caret where it was.
+  if (state.view === "list") return refreshList();
+  const res = await invoke("list_notes", {});
+  state.allTags = res.tags;
+  const meta = res.notes.find((n) => n.id === state.current);
+  if (!meta) { state.current = null; showView("list"); return refreshList(); }
+  state.currentMeta = meta;
+  if (!state.dirty) {
     const text = await invoke("read_note", { id: state.current });
     if (text !== editor.value) {
       const [a, b, top] = [editor.selectionStart, editor.selectionEnd, editor.scrollTop];
@@ -585,11 +730,14 @@ listen("notes-changed", async () => {
       editor.scrollTop = top;
     }
   }
-  renderTabs();
+  renderEditHead();
 });
 listen("sync-status", (e) => { syncStatus = e.payload; renderSync(); });
 listen("open-settings", openSettings);
-listen("shown", () => { if ($("settings").hidden && $("search").hidden) editor.focus(); });
+listen("shown", () => {
+  if (OVERLAYS.every((o) => $(o).hidden)) focusView();
+  if (state.view === "list") refreshList();
+});
 window.addEventListener("blur", flushSave);
 
 // ---------------- boot ----------------
@@ -601,6 +749,6 @@ window.addEventListener("blur", flushSave);
   renderMagicChip();
   syncStatus = await invoke("sync_status");
   renderSync();
-  await loadNotes();
-  setSaveState("");
+  await refreshList();
+  captureText.focus();
 })();

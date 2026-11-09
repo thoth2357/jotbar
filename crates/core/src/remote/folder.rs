@@ -64,7 +64,7 @@ impl FolderBackend {
                 return Ok(Put::Conflict(cur));
             }
         }
-        atomic_write(&self.path(id), encode_note(&body.content, body.updated_at, body.deleted).as_bytes())?;
+        atomic_write(&self.path(id), encode_note(&body.content, body.created_at, body.updated_at, body.deleted).as_bytes())?;
         Ok(Put::Written(RemoteMeta { id: id.into(), updated_at: body.updated_at, hash, deleted: body.deleted }))
     }
 }
