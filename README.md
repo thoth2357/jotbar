@@ -87,6 +87,7 @@ one word, `Esc` dismisses it.
 | | |
 |---|---|
 | `Ctrl+Enter` | add the note in the capture box |
+| `Ctrl+Z` / `Ctrl+Shift+Z` or `Ctrl+Y` | undo / redo, word by word |
 | `Space` / `,` / `Enter` in the tag field | turn the word into a tag; `Tab` takes the suggestion |
 | `Ctrl+N` | jump to the capture box |
 | `Ctrl+F` / `Ctrl+K` | search notes; `↓` `↑` `Enter` to pick |

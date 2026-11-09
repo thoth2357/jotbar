@@ -267,6 +267,7 @@ async function submitCapture() {
     return setSaveState(String(e));
   }
   captureText.value = "";
+  captureHist.reset();
   state.captureTags = [];
   captureMagic.clear();
   renderCaptureTags();
@@ -294,6 +295,7 @@ async function openNote(id) {
   state.current = id;
   state.currentMeta = state.notes.find((n) => n.id === id) ?? null;
   editor.value = await invoke("read_note", { id });
+  editorHist.reset();
   state.dirty = false;
   showView("edit");
   renderEditHead();
@@ -392,12 +394,88 @@ $("confirm-yes").onclick = async () => {
 };
 $("confirm-no").onclick = () => { hideOverlay("confirm"); focusView(); };
 
+// ---------------- undo / redo ----------------
+
+/// Undo history for a textarea. WebKitGTK's built-in undo is unreliable
+/// (and loses programmatic edits), so jotbar keeps its own: typing is
+/// grouped into word-sized steps, and app edits are recorded explicitly.
+function makeHistory(ta, onChange) {
+  let undo = [];
+  let redo = [];
+  let before = null;
+  let lastFamily = "";
+  let last = 0;
+  const snap = () => ({ v: ta.value, s: ta.selectionStart, e: ta.selectionEnd });
+  const push = (st) => {
+    if (undo.length && undo[undo.length - 1].v === st.v) return;
+    undo.push(st);
+    if (undo.length > 500) undo.shift();
+  };
+  function apply(st) {
+    ta.value = st.v;
+    ta.setSelectionRange(st.s, st.e);
+    lastFamily = "";
+    onChange();
+  }
+  function doUndo() {
+    if (!undo.length) return;
+    redo.push(snap());
+    apply(undo.pop());
+  }
+  function doRedo() {
+    if (!redo.length) return;
+    undo.push(snap());
+    apply(redo.pop());
+  }
+
+  ta.addEventListener("beforeinput", (e) => {
+    if (e.inputType === "historyUndo") { e.preventDefault(); return doUndo(); }
+    if (e.inputType === "historyRedo") { e.preventDefault(); return doRedo(); }
+    before = snap();
+  });
+  ta.addEventListener("input", (e) => {
+    const t = e.inputType || "other";
+    const family = t === "insertText" ? "ins" : t.startsWith("delete") ? "del" : t;
+    const now = Date.now();
+    const grouped =
+      (family === "ins" || family === "del") &&
+      family === lastFamily &&
+      now - last < 1500 &&
+      !(e.data && /\s/.test(e.data));
+    if (!grouped && before) push(before);
+    redo = [];
+    before = null;
+    lastFamily = family;
+    last = now;
+  });
+  ta.addEventListener("keydown", (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (k === "z" && !e.shiftKey) { e.preventDefault(); doUndo(); }
+    else if ((k === "z" && e.shiftKey) || k === "y") { e.preventDefault(); doRedo(); }
+  });
+
+  return {
+    /// Call before the app itself changes the text.
+    checkpoint() {
+      push(snap());
+      redo = [];
+      lastFamily = "";
+    },
+    reset() {
+      undo = [];
+      redo = [];
+      lastFamily = "";
+    },
+  };
+}
+
 // ---------------- magic mode (ghost-text completion) ----------------
 
 function magicOn() { return !!state.config?.magic?.enabled && !!state.config?.magic?.model; }
 
 /// Attach inline AI completion to a textarea whose sibling .ghost mirrors it.
-function makeMagic(ta, onAccept) {
+function makeMagic(ta, hist, onAccept) {
   const ghost = ta.parentElement.querySelector(".ghost");
   let suggestion = "";
   let timer = null;
@@ -439,6 +517,7 @@ function makeMagic(ta, onAccept) {
     let s = suggestion;
     if (wordOnly) s = s.match(/^\s*\S+/)?.[0] ?? s;
     const rest = suggestion.slice(s.length);
+    hist.checkpoint();
     ta.setRangeText(s, ta.selectionStart, ta.selectionEnd, "end");
     onAccept();
     if (rest) { suggestion = rest; render(); } else clear();
@@ -461,12 +540,15 @@ function makeMagic(ta, onAccept) {
   return { clear };
 }
 
-const captureMagic = makeMagic(captureText, autoGrow);
-const editorMagic = makeMagic(editor, () => { scheduleSave(); renderEditHead(); });
+const captureHist = makeHistory(captureText, () => { captureMagic.clear(); autoGrow(); renderSuggestions(); });
+const editorHist = makeHistory(editor, () => { editorMagic.clear(); scheduleSave(); renderEditHead(); });
+const captureMagic = makeMagic(captureText, captureHist, autoGrow);
+const editorMagic = makeMagic(editor, editorHist, () => { scheduleSave(); renderEditHead(); });
 // Registered after magic mode so Tab accepts a suggestion before indenting.
 editor.addEventListener("keydown", (e) => {
   if (e.key === "Tab" && !e.ctrlKey && !e.defaultPrevented) {
     e.preventDefault();
+    editorHist.checkpoint();
     editor.setRangeText("  ", editor.selectionStart, editor.selectionEnd, "end");
     scheduleSave();
   }
@@ -725,6 +807,7 @@ listen("notes-changed", async () => {
     const text = await invoke("read_note", { id: state.current });
     if (text !== editor.value) {
       const [a, b, top] = [editor.selectionStart, editor.selectionEnd, editor.scrollTop];
+      editorHist.checkpoint(); // a synced change can be undone like any edit
       editor.value = text;
       editor.setSelectionRange(Math.min(a, text.length), Math.min(b, text.length));
       editor.scrollTop = top;
