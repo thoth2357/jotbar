@@ -343,6 +343,9 @@ fn main() {
             }
         })
         .setup(move |app| {
+            // Menubar-only on macOS: no Dock icon, no Cmd+Tab entry.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             let handle = app.handle().clone();
             apply_size(&handle, &config.size);
             register_hotkey(&handle, &config.hotkey);
