@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>jotbar</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header id="bar" data-tauri-drag-region>
+    <nav id="tabs" role="tablist" aria-label="Notes"></nav>
+    <button id="new-tab" class="icon" title="New note (Ctrl+T)" aria-label="New note">+</button>
+    <span class="spacer" data-tauri-drag-region></span>
+    <button id="open-search" class="icon" title="Search all notes (Ctrl+F)" aria-label="Search">⌕</button>
+    <button id="open-settings" class="icon" title="Settings (Ctrl+,)" aria-label="Settings">⚙</button>
+  </header>
+
+  <main id="editor-wrap">
+    <div id="ghost" aria-hidden="true"></div>
+    <textarea id="editor" spellcheck="false" autocomplete="off" placeholder="Start typing…"></textarea>
+  </main>
+
+  <footer id="status">
+    <span id="save-state"></span>
+    <span class="spacer"></span>
+    <button id="magic-toggle" class="chip" title="Magic mode: local AI completion (Ctrl+Shift+M). Tab accepts.">✦ magic</button>
+    <button id="sync-state" class="chip" title="Sync now (Ctrl+S)"></button>
+  </footer>
+
+  <!-- search across every note -->
+  <section id="search" class="overlay" hidden>
+    <input id="search-input" type="search" placeholder="Search all notes…" autocomplete="off" />
+    <ul id="search-results" role="listbox"></ul>
+  </section>
+
+  <!-- confirm delete -->
+  <section id="confirm" class="overlay small" hidden>
+    <p id="confirm-text"></p>
+    <div class="row end">
+      <button id="confirm-no">Cancel</button>
+      <button id="confirm-yes" class="danger">Delete</button>
+    </div>
+  </section>
+
+  <!-- settings -->
+  <section id="settings" class="overlay" hidden>
+    <div class="settings-head">
+      <h1>Settings</h1>
+      <button id="close-settings" class="icon" aria-label="Close settings">✕</button>
+    </div>
+
+    <h2>Window</h2>
+    <div class="field">
+      <label>Size</label>
+      <div class="seg" id="size-seg">
+        <button data-v="small">S</button><button data-v="regular">M</button><button data-v="large">L</button><button data-v="xlarge">XL</button>
+      </div>
+    </div>
+    <div class="field">
+      <label for="font-size">Text size</label>
+      <input id="font-size" type="number" min="10" max="32" />
+    </div>
+    <div class="field">
+      <label for="hide-on-blur">Hide when clicking away</label>
+      <input id="hide-on-blur" type="checkbox" />
+    </div>
+    <div class="field col">
+      <label for="hotkey">Global hotkey</label>
+      <input id="hotkey" placeholder="CommandOrControl+Shift+Space" />
+      <small id="hotkey-note" class="muted"></small>
+    </div>
+
+    <h2>Notes folder</h2>
+    <div class="field col">
+      <input id="notes-dir" placeholder="default" />
+      <small class="muted">Plain .md files. Leave empty for the default. Now: <code id="notes-dir-now"></code></small>
+    </div>
+
+    <h2>Sync <small class="muted">— you choose where</small></h2>
+    <div class="seg" id="target-seg">
+      <button data-v="off">Off</button><button data-v="folder">Folder</button><button data-v="server">jotbar server</button><button data-v="webdav">WebDAV</button>
+    </div>
+    <div class="target-fields" data-for="folder">
+      <input id="t-folder-path" placeholder="~/Sync/jotbar" />
+      <small class="muted">Any folder another tool syncs: Syncthing, Nextcloud/Dropbox desktop, a NAS mount, a USB drive.</small>
+    </div>
+    <div class="target-fields" data-for="server">
+      <input id="t-server-url" placeholder="https://notes.example.com" />
+      <input id="t-server-token" type="password" placeholder="token (JOTBAR_TOKEN on the server)" />
+      <small class="muted">Run <code>jotbar-server</code> on any machine you own. See the README.</small>
+    </div>
+    <div class="target-fields" data-for="webdav">
+      <input id="t-webdav-url" placeholder="https://cloud.example.com/remote.php/dav/files/me/jotbar" />
+      <input id="t-webdav-user" placeholder="username" />
+      <input id="t-webdav-pass" type="password" placeholder="app password" />
+      <small class="muted">Nextcloud, ownCloud, Synology, Fastmail, rclone serve webdav…</small>
+    </div>
+    <div class="field" id="interval-field">
+      <label for="sync-interval">Sync every (seconds)</label>
+      <input id="sync-interval" type="number" min="10" />
+    </div>
+    <div class="row">
+      <button id="test-target">Test connection</button>
+      <small id="target-result" class="muted"></small>
+    </div>
+
+    <h2>Magic mode <small class="muted">— local AI completion</small></h2>
+    <div class="field">
+      <label for="magic-enabled">Enabled</label>
+      <input id="magic-enabled" type="checkbox" />
+    </div>
+    <div class="field col">
+      <label for="magic-endpoint">Ollama URL</label>
+      <input id="magic-endpoint" placeholder="http://127.0.0.1:11434" />
+    </div>
+    <div class="field col">
+      <label for="magic-model">Model</label>
+      <input id="magic-model" placeholder="e.g. qwen2.5:1.5b" />
+      <div id="model-chips" class="chips"></div>
+      <small class="muted">Runs on your machine through Ollama; nothing leaves it. A small model is fast: <code>ollama pull qwen2.5:1.5b</code></small>
+    </div>
+
+    <div class="row end sticky">
+      <small id="settings-error" class="error"></small>
+      <button id="save-settings" class="primary">Save</button>
+    </div>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>
